@@ -1,0 +1,971 @@
+"use strict";
+
+/* PRO CHECKERS ULTIMATE
+   Offline-first checkers game.
+   Red moves first. Board coordinates run from 0 to 7.
+*/
+
+const $ = id => document.getElementById(id);
+const SIZE = 8;
+const STORAGE_KEY = "proCheckersUltimateV3";
+
+const DEFAULT_DATA = {
+  played: 0,
+  wins: 0,
+  losses: 0,
+  draws: 0,
+  history: [],
+  settings: {
+    sound: true,
+    hints: true,
+    animations: true,
+    confirm: true
+  }
+};
+
+function loadData() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    if (!saved || typeof saved !== "object") return structuredCloneFallback(DEFAULT_DATA);
+
+    return {
+      ...structuredCloneFallback(DEFAULT_DATA),
+      ...saved,
+      history: Array.isArray(saved.history) ? saved.history : [],
+      settings: {
+        ...DEFAULT_DATA.settings,
+        ...(saved.settings || {})
+      }
+    };
+  } catch {
+    return structuredCloneFallback(DEFAULT_DATA);
+  }
+}
+
+function structuredCloneFallback(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+let data = loadData();
+let board = [];
+let current = "r";
+let selected = null;
+let legalForSelected = [];
+let chainFrom = null;
+let mode = "ai";
+let difficulty = "normal";
+let playerName = "Player 1";
+let moveCount = 1;
+let gameOver = false;
+let paused = false;
+let thinking = false;
+let historyStack = [];
+let lastMove = null;
+let gameStartedAt = 0;
+let audioContext = null;
+let resultSaved = false;
+let matchNumber = 0;
+
+const AI_DEPTH = {
+  easy: 1,
+  normal: 3,
+  hard: 4,
+  expert: 5
+};
+
+function persist() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch (error) {
+    console.warn("Could not save game data:", error);
+  }
+}
+
+function showScreen(id) {
+  document.querySelectorAll(".screen").forEach(screen => {
+    screen.classList.toggle("active", screen.id === id);
+  });
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function makeBoard() {
+  const result = Array.from({ length: SIZE }, () => Array(SIZE).fill(null));
+
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < SIZE; c++) {
+      if ((r + c) % 2 === 1) result[r][c] = { color: "b", king: false };
+    }
+  }
+
+  for (let r = 5; r < SIZE; r++) {
+    for (let c = 0; c < SIZE; c++) {
+      if ((r + c) % 2 === 1) result[r][c] = { color: "r", king: false };
+    }
+  }
+
+  return result;
+}
+
+function cloneBoard(source) {
+  return source.map(row => row.map(piece => piece ? { ...piece } : null));
+}
+
+function inside(r, c) {
+  return r >= 0 && r < SIZE && c >= 0 && c < SIZE;
+}
+
+function directions(piece) {
+  if (piece.king) return [[-1, -1], [-1, 1], [1, -1], [1, 1]];
+  return piece.color === "r"
+    ? [[-1, -1], [-1, 1]]
+    : [[1, -1], [1, 1]];
+}
+
+function allMoves(position, color, onlyCaptures = false) {
+  const captures = [];
+  const simple = [];
+
+  for (let r = 0; r < SIZE; r++) {
+    for (let c = 0; c < SIZE; c++) {
+      const piece = position[r][c];
+      if (!piece || piece.color !== color) continue;
+
+      for (const [dr, dc] of directions(piece)) {
+        const nr = r + dr;
+        const nc = c + dc;
+
+        if (!inside(nr, nc)) continue;
+
+        if (!position[nr][nc]) {
+          if (!onlyCaptures) {
+            simple.push({
+              from: [r, c],
+              to: [nr, nc],
+              capture: null
+            });
+          }
+          continue;
+        }
+
+        const jumpR = r + dr * 2;
+        const jumpC = c + dc * 2;
+
+        if (
+          position[nr][nc].color !== color &&
+          inside(jumpR, jumpC) &&
+          !position[jumpR][jumpC]
+        ) {
+          captures.push({
+            from: [r, c],
+            to: [jumpR, jumpC],
+            capture: [nr, nc]
+          });
+        }
+      }
+    }
+  }
+
+  return captures.length ? captures : (onlyCaptures ? [] : simple);
+}
+
+function movesForPiece(r, c) {
+  const piece = board[r][c];
+  if (!piece || piece.color !== current) return [];
+
+  const all = allMoves(board, current);
+  return all.filter(move => move.from[0] === r && move.from[1] === c);
+}
+
+function movePiece(position, move) {
+  const next = cloneBoard(position);
+  const [fr, fc] = move.from;
+  const [tr, tc] = move.to;
+  const piece = next[fr][fc];
+
+  next[fr][fc] = null;
+  next[tr][tc] = piece;
+
+  if (move.capture) {
+    const [cr, cc] = move.capture;
+    next[cr][cc] = null;
+  }
+
+  if (piece.color === "r" && tr === 0) piece.king = true;
+  if (piece.color === "b" && tr === 7) piece.king = true;
+
+  return next;
+}
+
+function saveSnapshot() {
+  historyStack.push({
+    board: cloneBoard(board),
+    current,
+    moveCount,
+    lastMove: lastMove ? { ...lastMove } : null,
+    gameOver,
+    resultSaved
+  });
+
+  if (historyStack.length > 100) historyStack.shift();
+}
+
+function countPieces(color, position = board) {
+  return position.flat().filter(piece => piece && piece.color === color).length;
+}
+
+function renderBoard() {
+  const element = $("board");
+  element.innerHTML = "";
+
+  const legalDestinations = settings().hints
+    ? legalForSelected.map(move => `${move.to[0]}-${move.to[1]}`)
+    : [];
+
+  for (let r = 0; r < SIZE; r++) {
+    for (let c = 0; c < SIZE; c++) {
+      const square = document.createElement("button");
+      square.type = "button";
+      square.className = `square ${(r + c) % 2 === 0 ? "light" : "dark"}`;
+      square.setAttribute("role", "gridcell");
+      square.setAttribute("aria-label", `Row ${r + 1}, column ${c + 1}`);
+
+      if (selected && selected[0] === r && selected[1] === c) {
+        square.classList.add("selected");
+      }
+
+      if (lastMove && (
+        (lastMove.from[0] === r && lastMove.from[1] === c) ||
+        (lastMove.to[0] === r && lastMove.to[1] === c)
+      )) {
+        square.classList.add("last-move");
+      }
+
+      if (legalDestinations.includes(`${r}-${c}`)) {
+        square.classList.add("legal");
+        if (legalForSelected.some(m => m.to[0] === r && m.to[1] === c && m.capture)) {
+          square.classList.add("capture-target");
+        }
+      }
+
+      const piece = board[r][c];
+
+      if (piece) {
+        const disc = document.createElement("span");
+        disc.className = `piece ${piece.color === "r" ? "red" : "black"}${piece.king ? " king" : ""}`;
+        disc.textContent = piece.king ? "♛" : "";
+        disc.setAttribute("aria-hidden", "true");
+        square.appendChild(disc);
+      }
+
+      square.addEventListener("click", () => handleSquare(r, c));
+      element.appendChild(square);
+    }
+  }
+
+  $("redCount").textContent = countPieces("r");
+  $("blackCount").textContent = countPieces("b");
+  $("moveNumber").textContent = moveCount;
+  $("turnLabel").textContent = current === "r" ? "Red" : "Black";
+
+  $("redPlayer").classList.toggle("active-player", current === "r" && !gameOver);
+  $("blackPlayer").classList.toggle("active-player", current === "b" && !gameOver);
+
+  $("undoBtn").disabled = historyStack.length === 0 || thinking;
+}
+
+function setStatus(message) {
+  $("status").textContent = message;
+}
+
+function setHint(message) {
+  $("hint").textContent = message;
+}
+
+function settings() {
+  return data.settings;
+}
+
+function updateStatsUI() {
+  const played = data.played || 0;
+  const wins = data.wins || 0;
+  const losses = data.losses || 0;
+  const draws = data.draws || 0;
+  const rate = played ? Math.round(wins / played * 100) : 0;
+
+  $("homePlayed").textContent = played;
+  $("homeWins").textContent = wins;
+  $("homeRate").textContent = `${rate}%`;
+
+  $("statPlayed").textContent = played;
+  $("statWins").textContent = wins;
+  $("statLosses").textContent = losses;
+  $("statRate").textContent = `${rate}%`;
+
+  renderHistory();
+}
+
+function renderHistory() {
+  const container = $("history");
+  container.innerHTML = "";
+
+  if (!data.history.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = "Your matches will appear here.";
+    container.appendChild(empty);
+    return;
+  }
+
+  data.history.slice(0, 20).forEach(item => {
+    const row = document.createElement("div");
+    row.className = "history-item";
+
+    const left = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = item.title;
+    const date = document.createElement("small");
+    date.textContent = item.date;
+    left.append(title, date);
+
+    const result = document.createElement("span");
+    result.className = `history-result ${item.result.toLowerCase()}`;
+    result.textContent = item.result;
+
+    row.append(left, result);
+    container.appendChild(row);
+  });
+}
+
+function syncSettingsUI() {
+  $("soundToggle").checked = settings().sound;
+  $("hintsToggle").checked = settings().hints;
+  $("animationsToggle").checked = settings().animations;
+  $("confirmToggle").checked = settings().confirm;
+  $("soundBtn").textContent = settings().sound ? "🔊" : "🔇";
+  document.body.classList.toggle("no-animations", !settings().animations);
+}
+
+function playSound(type) {
+  if (!settings().sound) return;
+
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+
+    if (!audioContext) audioContext = new AudioCtx();
+    if (audioContext.state === "suspended") audioContext.resume();
+
+    const oscillator = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+
+    const sounds = {
+      move: [360, 0.06],
+      capture: [190, 0.12],
+      king: [620, 0.18],
+      win: [760, 0.3],
+      error: [140, 0.1]
+    };
+
+    const [frequency, duration] = sounds[type] || sounds.move;
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(frequency, audioContext.currentTime);
+    gain.gain.setValueAtTime(0.08, audioContext.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + duration);
+
+    oscillator.connect(gain);
+    gain.connect(audioContext.destination);
+    oscillator.start();
+    oscillator.stop(audioContext.currentTime + duration);
+  } catch (error) {
+    console.warn("Sound unavailable:", error);
+  }
+}
+
+function handleSquare(r, c) {
+  if (gameOver || paused || thinking) return;
+  if (mode === "ai" && current === "b") return;
+
+  const piece = board[r][c];
+
+  if (selected) {
+    const chosenMove = legalForSelected.find(move => move.to[0] === r && move.to[1] === c);
+
+    if (chosenMove) {
+      applyPlayerMove(chosenMove);
+      return;
+    }
+
+    if (piece && piece.color === current && (!chainFrom ||
+      (chainFrom[0] === r && chainFrom[1] === c))) {
+      selected = [r, c];
+      legalForSelected = movesForPiece(r, c);
+      renderBoard();
+      return;
+    }
+  }
+
+  if (piece && piece.color === current && (!chainFrom ||
+      (chainFrom[0] === r && chainFrom[1] === c))) {
+    selected = [r, c];
+    legalForSelected = movesForPiece(r, c);
+    renderBoard();
+
+    if (!legalForSelected.length) {
+      setHint("That piece has no legal moves. Choose another piece.");
+    } else if (legalForSelected.some(move => move.capture)) {
+      setHint("Capture required! Choose a highlighted capture square.");
+    } else {
+      setHint("Choose a highlighted square to move.");
+    }
+    return;
+  }
+
+  playSound("error");
+}
+
+function applyPlayerMove(move) {
+  saveSnapshot();
+
+  const pieceBefore = board[move.from[0]][move.from[1]];
+  const wasKing = pieceBefore.king;
+
+  board = movePiece(board, move);
+  lastMove = { from: [...move.from], to: [...move.to] };
+
+  playSound(move.capture ? "capture" : "move");
+
+  const movedPiece = board[move.to[0]][move.to[1]];
+  if (!wasKing && movedPiece.king) playSound("king");
+
+  selected = null;
+  legalForSelected = [];
+
+  if (move.capture) {
+    const continuations = movesForCurrentPieceAfterCapture(move.to);
+
+    if (continuations.length) {
+      chainFrom = [...move.to];
+      selected = [...move.to];
+      legalForSelected = continuations;
+      setStatus("Continue your capture!");
+      setHint("Multi-jump available. Continue with the same piece.");
+      renderBoard();
+      return;
+    }
+  }
+
+  chainFrom = null;
+  completeTurn();
+}
+
+function movesForCurrentPieceAfterCapture(position) {
+  const piece = board[position[0]][position[1]];
+  if (!piece) return [];
+
+  const moves = [];
+  for (const [dr, dc] of directions(piece)) {
+    const mr = position[0] + dr;
+    const mc = position[1] + dc;
+    const tr = position[0] + dr * 2;
+    const tc = position[1] + dc * 2;
+
+    if (
+      inside(mr, mc) && inside(tr, tc) &&
+      board[mr][mc] && board[mr][mc].color !== piece.color &&
+      !board[tr][tc]
+    ) {
+      moves.push({ from: [...position], to: [tr, tc], capture: [mr, mc] });
+    }
+  }
+
+  return moves;
+}
+
+function completeTurn() {
+  moveCount = Math.floor((historyStack.length + 2) / 2) + 1;
+  current = current === "r" ? "b" : "r";
+
+  if (checkGameEnd()) return;
+
+  renderBoard();
+
+  if (mode === "ai" && current === "b") {
+    setStatus("AI is thinking...");
+    setHint("Your opponent is calculating its next move.");
+    thinking = true;
+    renderBoard();
+    window.setTimeout(runAI, 250);
+  } else {
+    setStatus(`${current === "r" ? "Red" : "Black"} to move`);
+    setHint("Select one of your pieces to see legal moves.");
+  }
+}
+
+function checkGameEnd() {
+  const red = countPieces("r");
+  const black = countPieces("b");
+  const moves = allMoves(board, current);
+
+  if (red === 0 || black === 0 || moves.length === 0) {
+    const winner = red === 0 ? "b" : black === 0 ? "r" : current === "r" ? "b" : "r";
+    finishGame(winner, "No legal moves remain.");
+    return true;
+  }
+
+  return false;
+}
+
+function finishGame(winner, reason = "Match complete.") {
+  if (gameOver) return;
+
+  gameOver = true;
+  paused = false;
+  thinking = false;
+  $("pauseOverlay").classList.add("hidden");
+
+  const red = countPieces("r");
+  const black = countPieces("b");
+
+  let result;
+  let title;
+  let message;
+
+  if (winner === "draw") {
+    result = "Draw";
+    title = "DRAW!";
+    message = reason;
+  } else {
+    const localPlayerWon = winner === "r";
+    const aiPlayerWon = mode === "ai" && winner === "b";
+
+    if (mode === "ai") {
+      result = localPlayerWon ? "Win" : "Loss";
+      title = localPlayerWon ? "VICTORY!" : "DEFEAT";
+      message = localPlayerWon ? "Excellent strategy. You won the match!" : "The AI won this round. Try again!";
+    } else {
+      result = "Win";
+      title = `${winner === "r" ? $("redName").textContent : $("blackName").textContent} WINS!`;
+      message = reason;
+    }
+
+    if (mode === "ai") {
+      if (aiPlayerWon && !localPlayerWon) {
+        // Result label already set above.
+      }
+    }
+  }
+
+  $("resultIcon").textContent = winner === "draw" ? "🤝" : "🏆";
+  $("resultTitle").textContent = title;
+  $("resultMessage").textContent = message;
+  $("finalRed").textContent = red;
+  $("finalBlack").textContent = black;
+
+  if (!resultSaved) {
+    data.played++;
+
+    if (mode === "ai") {
+      if (winner === "r") data.wins++;
+      else if (winner === "b") data.losses++;
+      else data.draws++;
+    } else {
+      if (winner === "draw") data.draws++;
+      else data.wins++;
+    }
+
+    const winnerName = winner === "draw"
+      ? "Draw"
+      : winner === "r" ? $("redName").textContent : $("blackName").textContent;
+
+    data.history.unshift({
+      title: `${mode === "ai" ? "AI Match" : "Local Match"} • ${winnerName}`,
+      result,
+      date: new Date().toLocaleDateString()
+    });
+
+    data.history = data.history.slice(0, 50);
+    resultSaved = true;
+    persist();
+  }
+
+  updateStatsUI();
+  renderBoard();
+  showScreen("result");
+  playSound(winner === "draw" ? "move" : "win");
+}
+
+function runAI() {
+  if (gameOver || paused || current !== "b") {
+    thinking = false;
+    return;
+  }
+
+  const moves = allMoves(board, "b");
+  if (!moves.length) {
+    thinking = false;
+    finishGame("r", "The AI has no legal moves.");
+    return;
+  }
+
+  const chosen = chooseAIMove(board, moves, difficulty);
+  thinking = false;
+
+  if (!chosen) {
+    finishGame("r", "The AI has no legal moves.");
+    return;
+  }
+
+  saveSnapshot();
+  const before = board[chosen.from[0]][chosen.from[1]];
+  const wasKing = before.king;
+
+  board = movePiece(board, chosen);
+  lastMove = { from: [...chosen.from], to: [...chosen.to] };
+
+  playSound(chosen.capture ? "capture" : "move");
+
+  const after = board[chosen.to[0]][chosen.to[1]];
+  if (!wasKing && after.king) playSound("king");
+
+  if (chosen.capture) {
+    let currentPos = [...chosen.to];
+    let more = movesForPieceOnBoard(board, currentPos, "b", true);
+
+    let jumpGuard = 0;
+    while (more.length && jumpGuard < 12) {
+      const nextMove = chooseAIMove(board, more, difficulty);
+      if (!nextMove) break;
+
+      board = movePiece(board, nextMove);
+      lastMove = { from: [...nextMove.from], to: [...nextMove.to] };
+      currentPos = [...nextMove.to];
+      more = movesForPieceOnBoard(board, currentPos, "b", true);
+      jumpGuard++;
+    }
+  }
+
+  completeTurn();
+}
+
+function movesForPieceOnBoard(position, coord, color, capturesOnly = false) {
+  const piece = position[coord[0]][coord[1]];
+  if (!piece) return [];
+
+  const captures = [];
+  const simple = [];
+
+  for (const [dr, dc] of directions(piece)) {
+    const nr = coord[0] + dr;
+    const nc = coord[1] + dc;
+    if (!inside(nr, nc)) continue;
+
+    if (position[nr][nc] && position[nr][nc].color !== color) {
+      const tr = coord[0] + dr * 2;
+      const tc = coord[1] + dc * 2;
+      if (inside(tr, tc) && !position[tr][tc]) {
+        captures.push({ from: [...coord], to: [tr, tc], capture: [nr, nc] });
+      }
+    } else if (!position[nr][nc] && !capturesOnly) {
+      simple.push({ from: [...coord], to: [nr, nc], capture: null });
+    }
+  }
+
+  return captures.length ? captures : (capturesOnly ? [] : simple);
+}
+
+function chooseAIMove(position, moves, level) {
+  if (!moves.length) return null;
+
+  if (level === "easy" && Math.random() < 0.65) {
+    return moves[Math.floor(Math.random() * moves.length)];
+  }
+
+  const depth = AI_DEPTH[level] || 3;
+  let bestMove = moves[0];
+  let bestScore = -Infinity;
+
+  const ordered = [...moves].sort((a, b) => {
+    return Number(Boolean(b.capture)) - Number(Boolean(a.capture));
+  });
+
+  for (const move of ordered) {
+    const next = movePiece(position, move);
+    const score = -negamax(next, "r", depth - 1, -Infinity, Infinity, 1);
+    if (score > bestScore) {
+      bestScore = score;
+      bestMove = move;
+    }
+  }
+
+  return bestMove;
+}
+
+function negamax(position, color, depth, alpha, beta, ply) {
+  const redCount = countPieces("r", position);
+  const blackCount = countPieces("b", position);
+  const moves = allMoves(position, color);
+
+  if (redCount === 0) return color === "b" ? 10000 - ply : -10000 + ply;
+  if (blackCount === 0) return color === "r" ? 10000 - ply : -10000 + ply;
+  if (!moves.length) return -9000 + ply;
+  if (depth <= 0) return evaluate(position, color);
+
+  let best = -Infinity;
+
+  for (const move of moves) {
+    const next = movePiece(position, move);
+    const score = -negamax(next, color === "r" ? "b" : "r", depth - 1, -beta, -alpha, ply + 1);
+    best = Math.max(best, score);
+    alpha = Math.max(alpha, score);
+    if (alpha >= beta) break;
+  }
+
+  return best;
+}
+
+function evaluate(position, perspective) {
+  let score = 0;
+
+  for (let r = 0; r < SIZE; r++) {
+    for (let c = 0; c < SIZE; c++) {
+      const piece = position[r][c];
+      if (!piece) continue;
+
+      let value = piece.king ? 185 : 100;
+
+      if (!piece.king) {
+        const advancement = piece.color === "r" ? 7 - r : r;
+        value += advancement * 3;
+      }
+
+      if (c >= 2 && c <= 5) value += 4;
+      if (r === 0 || r === 7 || c === 0 || c === 7) value += 3;
+
+      score += piece.color === perspective ? value : -value;
+    }
+  }
+
+  const ownMoves = allMoves(position, perspective).length;
+  const enemyMoves = allMoves(position, perspective === "r" ? "b" : "r").length;
+  score += (ownMoves - enemyMoves) * 2;
+
+  return score;
+}
+
+function undoMove() {
+  if (!historyStack.length || thinking) return;
+
+  if (settings().confirm && !gameOver) {
+    // Undo is reversible and does not end the match, so no confirmation is needed.
+  }
+
+  const steps = mode === "ai" && current === "r" && historyStack.length >= 2 ? 2 : 1;
+  let snapshot = null;
+
+  for (let i = 0; i < steps && historyStack.length; i++) {
+    snapshot = historyStack.pop();
+  }
+
+  if (!snapshot) return;
+
+  board = cloneBoard(snapshot.board);
+  current = snapshot.current;
+  moveCount = snapshot.moveCount;
+  lastMove = snapshot.lastMove;
+  gameOver = false;
+  resultSaved = false;
+  paused = false;
+  selected = null;
+  legalForSelected = [];
+  chainFrom = null;
+
+  $("pauseOverlay").classList.add("hidden");
+  renderBoard();
+  setStatus(`${current === "r" ? "Red" : "Black"} to move`);
+  setHint("Move undone.");
+  showScreen("game");
+}
+
+function startGame() {
+  mode = $("homeMode").value;
+  difficulty = $("homeDifficulty").value;
+  playerName = ($("playerName").value.trim() || "Player 1").slice(0, 18);
+  matchNumber++;
+  board = makeBoard();
+  current = "r";
+  selected = null;
+  legalForSelected = [];
+  chainFrom = null;
+  moveCount = 1;
+  gameOver = false;
+  paused = false;
+  thinking = false;
+  historyStack = [];
+  lastMove = null;
+  resultSaved = false;
+  gameStartedAt = Date.now();
+
+  $("redName").textContent = playerName;
+  $("blackName").textContent = mode === "ai" ? `AI (${difficulty})` : "Player 2";
+  $("difficultyLabel").textContent = mode === "ai"
+    ? difficulty.charAt(0).toUpperCase() + difficulty.slice(1)
+    : "Local";
+  $("homeDifficulty").disabled = mode === "local";
+  $("difficultyLabel").parentElement.style.display = mode === "ai" ? "flex" : "none";
+
+  $("pauseOverlay").classList.add("hidden");
+  $("pauseBtn").disabled = false;
+  setStatus(`${playerName}'s turn`);
+  setHint("Red moves first. Select a red piece.");
+  renderBoard();
+  showScreen("game");
+}
+
+function restartGame() {
+  if (settings().confirm && !gameOver &&
+      !window.confirm("Restart this match? The current match will not be recorded.")) {
+    return;
+  }
+  startGame();
+}
+
+function endMatch() {
+  if (gameOver) return;
+
+  if (settings().confirm && !window.confirm("End this match now?")) return;
+
+  const red = countPieces("r");
+  const black = countPieces("b");
+
+  if (mode === "ai") {
+    finishGame("b", "You ended the match.");
+  } else if (red === black) {
+    finishGame("draw", "The match ended early.");
+  } else {
+    finishGame(red > black ? "r" : "b", "The match ended early. The side with more pieces wins.");
+  }
+}
+
+function togglePause(force) {
+  if (gameOver) return;
+  paused = typeof force === "boolean" ? force : !paused;
+  $("pauseOverlay").classList.toggle("hidden", !paused);
+  $("pauseBtn").textContent = paused ? "▶" : "Ⅱ";
+
+  if (paused) {
+    setStatus("Game paused");
+  } else {
+    setStatus(`${current === "r" ? "Red" : "Black"} to move`);
+    if (mode === "ai" && current === "b") {
+      thinking = true;
+      window.setTimeout(runAI, 250);
+    }
+  }
+}
+
+function resetStats() {
+  if (!window.confirm("Reset all statistics and match history?")) return;
+
+  data.played = 0;
+  data.wins = 0;
+  data.losses = 0;
+  data.draws = 0;
+  data.history = [];
+  persist();
+  updateStatsUI();
+}
+
+function bindEvents() {
+  $("startBtn").addEventListener("click", startGame);
+  $("statsBtn").addEventListener("click", () => {
+    updateStatsUI();
+    showScreen("stats");
+  });
+  $("settingsBtn").addEventListener("click", () => showScreen("settings"));
+
+  document.querySelectorAll("[data-home]").forEach(button => {
+    button.addEventListener("click", () => showScreen("home"));
+  });
+
+  $("homeMode").addEventListener("change", () => {
+    $("homeDifficulty").disabled = $("homeMode").value === "local";
+  });
+
+  $("soundBtn").addEventListener("click", () => {
+    data.settings.sound = !data.settings.sound;
+    persist();
+    syncSettingsUI();
+    playSound("move");
+  });
+
+  $("undoBtn").addEventListener("click", undoMove);
+  $("restartBtn").addEventListener("click", restartGame);
+  $("giveUpBtn").addEventListener("click", endMatch);
+  $("backBtn").addEventListener("click", () => {
+    if (!gameOver && settings().confirm &&
+        !window.confirm("Return home? Your current match will not be saved.")) return;
+    thinking = false;
+    paused = false;
+    $("pauseOverlay").classList.add("hidden");
+    showScreen("home");
+  });
+
+  $("pauseBtn").addEventListener("click", () => togglePause());
+  $("resumeBtn").addEventListener("click", () => togglePause(false));
+  $("pauseHomeBtn").addEventListener("click", () => {
+    if (settings().confirm &&
+        !window.confirm("Leave this match and return home?")) return;
+    thinking = false;
+    paused = false;
+    $("pauseOverlay").classList.add("hidden");
+    showScreen("home");
+  });
+
+  $("playAgainBtn").addEventListener("click", startGame);
+  $("resultHomeBtn").addEventListener("click", () => showScreen("home"));
+  $("clearHistoryBtn").addEventListener("click", () => {
+    if (!window.confirm("Clear match history? Statistics will remain.")) return;
+    data.history = [];
+    persist();
+    renderHistory();
+  });
+
+  $("soundToggle").addEventListener("change", event => {
+    data.settings.sound = event.target.checked;
+    persist();
+    syncSettingsUI();
+    playSound("move");
+  });
+
+  $("hintsToggle").addEventListener("change", event => {
+    data.settings.hints = event.target.checked;
+    persist();
+    syncSettingsUI();
+    renderBoard();
+  });
+
+  $("animationsToggle").addEventListener("change", event => {
+    data.settings.animations = event.target.checked;
+    persist();
+    syncSettingsUI();
+  });
+
+  $("confirmToggle").addEventListener("change", event => {
+    data.settings.confirm = event.target.checked;
+    persist();
+    syncSettingsUI();
+  });
+
+  $("resetStatsBtn").addEventListener("click", resetStats);
+}
+
+function init() {
+  bindEvents();
+  syncSettingsUI();
+  updateStatsUI();
+  $("homeDifficulty").disabled = $("homeMode").value === "local";
+  board = makeBoard();
+  renderBoard();
+}
+
+init();
