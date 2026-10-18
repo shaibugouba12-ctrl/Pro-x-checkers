@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#090d18">
+  <meta name="description" content="Pro Checkers Ultimate - Play checkers against AI or challenge a friend.">
+  <title>Pro Checkers Ultimate</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="Pro Checkers home">
+        <span class="brand-icon">♟</span>
+        <span>PRO<span class="brand-accent">CHECKERS</span></span>
+      </a>
+      <button id="soundBtn" class="icon-btn" aria-label="Toggle sound">🔊</button>
+    </header>
+
+    <main>
+      <!-- HOME -->
+      <section id="home" class="screen active">
+        <div class="hero">
+          <div class="eyebrow">♛ STRATEGY • SKILL • VICTORY</div>
+          <h1>RULE THE <span>BOARD.</span></h1>
+          <p>Every move matters. Every king has a story.</p>
+        </div>
+
+        <div class="home-layout">
+          <div class="panel setup-panel">
+            <h2>Start your battle</h2>
+            <label for="playerName">Player name</label>
+            <input id="playerName" maxlength="18" placeholder="Enter your name" value="Player 1">
+
+            <label for="homeMode">Game mode</label>
+            <select id="homeMode">
+              <option value="ai">⚔️ Battle the AI</option>
+              <option value="local">👥 Two players</option>
+            </select>
+
+            <label for="homeDifficulty">AI difficulty</label>
+            <select id="homeDifficulty">
+              <option value="easy">Easy</option>
+              <option value="normal" selected>Normal</option>
+              <option value="hard">Hard</option>
+              <option value="expert">Expert</option>
+            </select>
+
+            <button id="startBtn" class="primary-btn">START GAME <span>→</span></button>
+
+            <div class="secondary-actions">
+              <button id="statsBtn" class="secondary-btn">🏆 Statistics</button>
+              <button id="settingsBtn" class="secondary-btn">⚙ Settings</button>
+            </div>
+          </div>
+
+          <div class="panel preview-panel">
+            <div class="preview-heading">
+              <span>THE BATTLEFIELD</span>
+              <span class="live-dot"></span>
+            </div>
+            <div class="mini-board" aria-label="Decorative checkers board">
+              <span>♟</span><span></span><span>♟</span><span></span>
+              <span></span><span>♟</span><span></span><span>♟</span>
+              <span>♟</span><span></span><span>♟</span><span></span>
+              <span></span><span>♟</span><span></span><span>♟</span>
+            </div>
+            <h3>Think. Move. Conquer.</h3>
+            <p>Master the board and build your winning streak.</p>
+            <div class="preview-stats">
+              <div><strong id="homePlayed">0</strong><span>GAMES</span></div>
+              <div><strong id="homeWins">0</strong><span>WINS</span></div>
+              <div><strong id="homeRate">0%</strong><span>WIN RATE</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- GAME -->
+      <section id="game" class="screen">
+        <div class="game-heading">
+          <button id="backBtn" class="text-btn">← Home</button>
+          <div>
+            <div class="eyebrow">LIVE MATCH</div>
+            <h1>Battle <span>Board</span></h1>
+          </div>
+          <button id="pauseBtn" class="icon-btn" aria-label="Pause game">Ⅱ</button>
+        </div>
+
+        <div id="pauseOverlay" class="pause-overlay hidden">
+          <div class="panel pause-card">
+            <h2>Game paused</h2>
+            <p>Take a moment. Your match is waiting.</p>
+            <button id="resumeBtn" class="primary-btn">RESUME</button>
+            <button id="pauseHomeBtn" class="secondary-btn">RETURN HOME</button>
+          </div>
+        </div>
+
+        <div class="match-layout">
+          <div class="panel board-panel">
+            <div class="player-card" id="blackPlayer">
+              <div class="player-avatar black-avatar">♟</div>
+              <div class="player-info"><strong id="blackName">AI Opponent</strong><small>BLACK SIDE</small></div>
+              <span id="blackCount" class="piece-count">12</span>
+            </div>
+
+            <div id="status" class="status-bar" role="status">Your move</div>
+
+            <div id="board" class="board" role="grid" aria-label="Checkers game board"></div>
+
+            <div class="player-card" id="redPlayer">
+              <div class="player-avatar red-avatar">♟</div>
+              <div class="player-info"><strong id="redName">Player 1</strong><small>RED SIDE</small></div>
+              <span id="redCount" class="piece-count">12</span>
+            </div>
+          </div>
+
+          <aside class="panel controls-panel">
+            <div class="panel-heading">
+              <span class="eyebrow">MATCH CONTROL</span>
+              <span class="live-pill">● LIVE</span>
+            </div>
+            <div class="control-stat">
+              <span>Move number</span><strong id="moveNumber">1</strong>
+            </div>
+            <div class="control-stat">
+              <span>Current turn</span><strong id="turnLabel">Red</strong>
+            </div>
+            <div class="control-stat">
+              <span>Difficulty</span><strong id="difficultyLabel">Normal</strong>
+            </div>
+
+            <div class="hint-box" id="hint">Select one of your pieces to see legal moves.</div>
+
+            <button id="undoBtn" class="secondary-btn full-btn">↶ Undo move</button>
+            <button id="restartBtn" class="secondary-btn full-btn">⟳ Restart match</button>
+            <button id="giveUpBtn" class="danger-btn full-btn">End match</button>
+          </aside>
+        </div>
+      </section>
+
+      <!-- GAME OVER -->
+      <section id="result" class="screen">
+        <div class="panel result-panel">
+          <div class="result-icon" id="resultIcon">🏆</div>
+          <div class="eyebrow">MATCH COMPLETE</div>
+          <h1 id="resultTitle">VICTORY!</h1>
+          <p id="resultMessage">A great battle.</p>
+          <div class="result-score">
+            <div><span>RED PIECES</span><strong id="finalRed">0</strong></div>
+            <div class="score-divider"></div>
+            <div><span>BLACK PIECES</span><strong id="finalBlack">0</strong></div>
+          </div>
+          <button id="playAgainBtn" class="primary-btn">PLAY AGAIN →</button>
+          <button id="resultHomeBtn" class="secondary-btn full-btn">BACK TO HOME</button>
+        </div>
+      </section>
+
+      <!-- STATISTICS -->
+      <section id="stats" class="screen">
+        <div class="page-heading">
+          <button class="text-btn" data-home>← Home</button>
+          <div class="eyebrow">YOUR PROGRESS</div>
+          <h1>Statistics <span>& History</span></h1>
+        </div>
+
+        <div class="stats-grid">
+          <div class="panel stat-card"><span>GAMES PLAYED</span><strong id="statPlayed">0</strong></div>
+          <div class="panel stat-card"><span>WINS</span><strong id="statWins">0</strong></div>
+          <div class="panel stat-card"><span>LOSSES</span><strong id="statLosses">0</strong></div>
+          <div class="panel stat-card"><span>WIN RATE</span><strong id="statRate">0%</strong></div>
+        </div>
+
+        <div class="panel history-panel">
+          <div class="panel-heading"><h2>Recent matches</h2><button id="clearHistoryBtn" class="text-btn">Clear</button></div>
+          <div id="history" class="history-list"><p class="empty-state">Your matches will appear here.</p></div>
+        </div>
+      </section>
+
+      <!-- SETTINGS -->
+      <section id="settings" class="screen">
+        <div class="page-heading">
+          <button class="text-btn" data-home>← Home</button>
+          <div class="eyebrow">PERSONALIZE YOUR GAME</div>
+          <h1>Game <span>Settings</span></h1>
+        </div>
+
+        <div class="panel settings-panel">
+          <div class="setting-row">
+            <div><strong>Sound effects</strong><p>Play sounds for moves and captures.</p></div>
+            <input id="soundToggle" type="checkbox" checked>
+          </div>
+          <div class="setting-row">
+            <div><strong>Move hints</strong><p>Highlight legal moves for your selected piece.</p></div>
+            <input id="hintsToggle" type="checkbox" checked>
+          </div>
+          <div class="setting-row">
+            <div><strong>Animations</strong><p>Enable visual movement effects.</p></div>
+            <input id="animationsToggle" type="checkbox" checked>
+          </div>
+          <div class="setting-row">
+            <div><strong>Confirm ending a match</strong><p>Ask before ending an active match.</p></div>
+            <input id="confirmToggle" type="checkbox" checked>
+          </div>
+          <button id="resetStatsBtn" class="danger-btn full-btn">Reset all statistics</button>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>PRO CHECKERS ULTIMATE</span>
+      <span>Made for strategy lovers ♟</span>
+    </footer>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
